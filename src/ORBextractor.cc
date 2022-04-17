@@ -1381,7 +1381,8 @@ namespace ORB_SLAM3
             Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
             int newNumKeypoints = computeDescriptorsWithRemovingDuplicates(workingMat, keypoints, desc, pattern);
             nkeypoints += newNumKeypoints;
-            cv::vconcat(rawDescriptors, desc, rawDescriptors);
+            for (int i = 0; i < newNumKeypoints; i++)
+                rawDescriptors.push_back(desc.row(i));
             rawKeypoints.insert(rawKeypoints.end(), keypoints.begin(), keypoints.end());
         }
         Mat descriptors;
