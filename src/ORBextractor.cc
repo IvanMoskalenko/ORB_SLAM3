@@ -1228,6 +1228,36 @@ namespace ORB_SLAM3
             computeOrbDescriptor(keypoints[i], image, &pattern[0], descriptors.ptr((int)i));
     }
 
+    static int computeDescriptorsWithRemovingDuplicates(const Mat& image, vector<KeyPoint>& keypoints, Mat& descriptors,
+                                   const vector<Point>& pattern)
+    {
+        descriptors = Mat::zeros((int)keypoints.size(), 32, CV_8UC1);
+
+        for (size_t i = 0; i < keypoints.size(); i++)
+            computeOrbDescriptor(keypoints[i], image, &pattern[0], descriptors.ptr((int)i));
+
+        Mat uniqueDescriptors;
+        uniqueDescriptors.push_back( descriptors.row(0) );
+        for (int i = 1; i < descriptors.rows; ++i) {
+            int isInside = false;
+            for (int j = 0; j < uniqueDescriptors.rows; ++j) {
+                int count = 0;
+                for (int k = 0; k < uniqueDescriptors.cols; ++k)
+                    if(descriptors.at<int>(i,k) == uniqueDescriptors.at<int>(j,k))
+                        ++count;
+                if (count == 32) {
+                    isInside = true;
+                    keypoints.erase(keypoints.begin() + i);
+                    break;
+                }
+            }
+            if (isInside == false) uniqueDescriptors.push_back( descriptors.row(i));
+        }
+        descriptors = uniqueDescriptors;
+
+        return descriptors.rows;
+    }
+
     int ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPoint>& _keypoints,
                                   OutputArray _descriptors, std::vector<int> &vLappingArea)
     {
@@ -1315,7 +1345,6 @@ namespace ORB_SLAM3
     int ORBextractor::operator()( InputArray _image, InputArray _imageS, InputArray _mask, vector<KeyPoint>& _keypoints,
                                   OutputArray _descriptors, std::vector<int> &vLappingArea, InputArray _depthS, const cv::Mat &K, const cv::Mat &KS, Eigen::Matrix4f &T)
     {
-        //cout << "[ORBextractor]: Max Features: " << nfeatures << endl;
         if(_image.empty())
             return -1;
         if(_imageS.empty())
@@ -1332,28 +1361,9 @@ namespace ORB_SLAM3
         vector < vector<KeyPoint> > allKeypoints;
         ComputeKeyPointsOctTree(allKeypoints, depthS, K, KS, T);
 
-        //ComputeKeyPointsOld(allKeypoints);
-
-        Mat descriptors;
-
         int nkeypoints = 0;
-        for (int level = 0; level < nlevels; ++level)
-            nkeypoints += (int)allKeypoints[level].size();
-        if( nkeypoints == 0 )
-            _descriptors.release();
-        else
-        {
-            _descriptors.create(nkeypoints, 32, CV_8U);
-            descriptors = _descriptors.getMat();
-        }
-
-        //_keypoints.clear();
-        //_keypoints.reserve(nkeypoints);
-        _keypoints = vector<cv::KeyPoint>(nkeypoints);
-
-        int offset = 0;
-        //Modified for speeding up stereo fisheye matching
-        int monoIndex = 0, stereoIndex = nkeypoints-1;
+        vector<cv::KeyPoint> rawKeypoints;
+        Mat rawDescriptors;
         for (int level = 0; level < nlevels; ++level)
         {
             vector<KeyPoint>& keypoints = allKeypoints[level];
@@ -1368,37 +1378,49 @@ namespace ORB_SLAM3
             GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
 
             // Compute the descriptors
-            // Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
             Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
-            computeDescriptors(workingMat, keypoints, desc, pattern);
-
-            offset += nkeypointsLevel;
-
-
-            float scale = mvScaleFactor[level]; //getScale(level, firstLevel, scaleFactor);
-            int i = 0;
-            for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
-                         keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint){
-
-                // Scale keypoint coordinates
-                if (level != 0){
-                    keypoint->pt *= scale;
-                }
-
-                if(keypoint->pt.x >= vLappingArea[0] && keypoint->pt.x <= vLappingArea[1]){
-                    _keypoints.at(stereoIndex) = (*keypoint);
-                    desc.row(i).copyTo(descriptors.row(stereoIndex));
-                    stereoIndex--;
-                }
-                else{
-                    _keypoints.at(monoIndex) = (*keypoint);
-                    desc.row(i).copyTo(descriptors.row(monoIndex));
-                    monoIndex++;
-                }
-                i++;
-            }
+            int newNumKeypoints = computeDescriptorsWithRemovingDuplicates(workingMat, keypoints, desc, pattern);
+            nkeypoints += newNumKeypoints;
+            cv::vconcat(rawDescriptors, desc, rawDescriptors);
+            rawKeypoints.insert(rawKeypoints.end(), keypoints.begin(), keypoints.end());
         }
-        //cout << "[ORBextractor]: extracted " << _keypoints.size() << " KeyPoints" << endl;
+        Mat descriptors;
+
+        if( nkeypoints == 0 )
+            _descriptors.release();
+        else
+        {
+            _descriptors.create(nkeypoints, 32, CV_8U);
+            descriptors = _descriptors.getMat();
+        }
+
+        _keypoints = vector<cv::KeyPoint>(nkeypoints);
+
+        int monoIndex = 0, stereoIndex = nkeypoints-1;
+        int i = 0;
+        for (vector<KeyPoint>::iterator keypoint = rawKeypoints.begin(),
+                     keypointEnd = rawKeypoints.end(); keypoint != keypointEnd; ++keypoint){
+
+            int level = keypoint->octave;
+            float scale = mvScaleFactor[level];
+            // Scale keypoint coordinates
+            if (level != 0){
+                keypoint->pt *= scale;
+            }
+
+            if(keypoint->pt.x >= vLappingArea[0] && keypoint->pt.x <= vLappingArea[1]){
+                _keypoints.at(stereoIndex) = (*keypoint);
+                rawDescriptors.row(i).copyTo(descriptors.row(stereoIndex));
+                stereoIndex--;
+            }
+            else{
+                _keypoints.at(monoIndex) = (*keypoint);
+                rawDescriptors.row(i).copyTo(descriptors.row(monoIndex));
+                monoIndex++;
+            }
+            i++;
+        }
+
         return monoIndex;
     }
 
