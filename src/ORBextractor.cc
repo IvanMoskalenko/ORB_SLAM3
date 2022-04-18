@@ -1251,7 +1251,7 @@ namespace ORB_SLAM3
                     break;
                 }
             }
-            if (isInside == false) uniqueDescriptors.push_back( descriptors.row(i));
+            if (!isInside) uniqueDescriptors.push_back( descriptors.row(i));
         }
         descriptors = uniqueDescriptors;
 
