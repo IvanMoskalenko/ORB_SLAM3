@@ -58,6 +58,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <vector>
 #include <iostream>
+#include <Eigen/Core>
 
 #include "ORBextractor.h"
 
@@ -430,6 +431,7 @@ namespace ORB_SLAM3
         }
 
         mvImagePyramid.resize(nlevels);
+        mvImagePyramidSlave.resize(nlevels);
 
         mnFeaturesPerLevel.resize(nlevels);
         float factor = 1.0f / scaleFactor;
@@ -778,6 +780,62 @@ namespace ORB_SLAM3
         return vResultKeys;
     }
 
+    vector <cv::KeyPoint> ORBextractor::vToDistributeKeysCalculate(const int nRows, const int minBorderY,
+                                                                   const int hCell, const int maxBorderY,
+                                                                   const int nCols, const int minBorderX,
+                                                                   const int wCell, const int maxBorderX,
+                                                                   int level, bool isSlave) {
+        vector<cv::KeyPoint> vToDistributeKeys;
+        vToDistributeKeys.reserve(nfeatures * 10);
+        for (auto i = 0; i < nRows; i++) {
+            auto const iniY = minBorderY + i * hCell;
+            auto maxY = iniY + hCell + 6;
+
+            if (iniY >= maxBorderY - 3)
+                continue;
+            if (maxY > maxBorderY)
+                maxY = maxBorderY;
+
+            for (int j = 0; j < nCols; j++) {
+                auto const iniX = minBorderX + j * wCell;
+                auto maxX = iniX + wCell + 6;
+                if (iniX >= maxBorderX - 6)
+                    continue;
+                if (maxX > maxBorderX)
+                    maxX = maxBorderX;
+
+                vector<cv::KeyPoint> vKeysCell;
+
+                if (isSlave) {
+                    FAST(mvImagePyramidSlave[level].rowRange(iniY, maxY).colRange(iniX, maxX),
+                         vKeysCell, iniThFAST, true);
+                } else {
+                    FAST(mvImagePyramid[level].rowRange(iniY, maxY).colRange(iniX, maxX),
+                         vKeysCell, iniThFAST, true);
+                }
+                if (vKeysCell.empty()) {
+                    if (isSlave) {
+                        FAST(mvImagePyramidSlave[level].rowRange(iniY, maxY).colRange(iniX, maxX),
+                             vKeysCell, minThFAST, true);
+                    } else {
+                        FAST(mvImagePyramid[level].rowRange(iniY, maxY).colRange(iniX, maxX),
+                             vKeysCell, minThFAST, true);
+                    }
+                }
+
+                if (!vKeysCell.empty()) {
+                    for (auto &vit: vKeysCell) {
+                        vit.pt.x += float(j * wCell);
+                        vit.pt.y += float(i * hCell);
+                        vToDistributeKeys.push_back(vit);
+                    }
+                }
+
+            }
+        }
+        return vToDistributeKeys;
+    }
+
     void ORBextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint> >& allKeypoints)
     {
         allKeypoints.resize(nlevels);
@@ -893,6 +951,75 @@ namespace ORB_SLAM3
         // compute orientations
         for (int level = 0; level < nlevels; ++level)
             computeOrientation(mvImagePyramid[level], allKeypoints[level], umax);
+    }
+
+    void ORBextractor::ComputeKeyPointsOctTree(vector <vector<KeyPoint>> &allMasterKeypoints,
+                                               vector <vector<KeyPoint>> &allSlaveKeypoints) {
+        allMasterKeypoints.resize(nlevels);
+        allSlaveKeypoints.resize(nlevels);
+
+        const float W = 35;
+
+        for (int level = 0; level < nlevels; ++level) {
+            auto const minBorderX = EDGE_THRESHOLD - 3;
+            auto const minBorderY = minBorderX;
+            auto const maxBorderX = mvImagePyramid[level].cols - EDGE_THRESHOLD + 3;
+            auto const maxBorderY = mvImagePyramid[level].rows - EDGE_THRESHOLD + 3;
+
+            auto const width = float(maxBorderX - minBorderX);
+            auto const height = float(maxBorderY - minBorderY);
+
+            auto const nCols = int(width / W);
+            auto const nRows = int(height / W);
+            auto const wCell = int(ceil(width / float(nCols)));
+            auto const hCell = int(ceil(height / float(nRows)));
+
+
+            auto vToDistributeKeys = vToDistributeKeysCalculate(nRows, minBorderY,
+                                                                hCell, maxBorderY,
+                                                                nCols, minBorderX,
+                                                                wCell, maxBorderX,
+                                                                level, false);
+            auto vToDistributeKeysS = vToDistributeKeysCalculate(nRows, minBorderY,
+                                                                 hCell, maxBorderY,
+                                                                 nCols, minBorderX,
+                                                                 wCell, maxBorderX,
+                                                                 level, true);
+
+            auto &keypointsMaster = allMasterKeypoints[level];
+            auto &keypointsSlave = allSlaveKeypoints[level];
+
+            keypointsMaster.reserve(nfeatures);
+            keypointsSlave.reserve(nfeatures);
+
+            keypointsMaster = DistributeOctTree(vToDistributeKeys, minBorderX, maxBorderX,
+                                                minBorderY, maxBorderY, mnFeaturesPerLevel[level], level);
+            keypointsSlave = DistributeOctTree(vToDistributeKeysS, minBorderX, maxBorderX,
+                                               minBorderY, maxBorderY, mnFeaturesPerLevel[level], level);
+
+            auto const scaledPatchSize = int(PATCH_SIZE * mvScaleFactor[level]);
+
+            // Add border to coordinates and scale information
+            auto const keypointsMasterSize = int(keypointsMaster.size());
+            for (auto i = 0; i < keypointsMasterSize; i++) {
+                keypointsMaster[i].pt.x += minBorderX;
+                keypointsMaster[i].pt.y += minBorderY;
+                keypointsMaster[i].octave = level;
+                keypointsMaster[i].size = float(scaledPatchSize);
+            }
+            auto const keypointsSlaveSize = int(keypointsSlave.size());
+            for (auto i = 0; i < keypointsSlaveSize; i++) {
+                keypointsSlave[i].pt.x += minBorderX;
+                keypointsSlave[i].pt.y += minBorderY;
+                keypointsSlave[i].octave = level;
+                keypointsSlave[i].size = float(scaledPatchSize);
+            }
+        }
+        // compute orientations
+        for (auto level = 0; level < nlevels; ++level) {
+            computeOrientation(mvImagePyramid[level], allMasterKeypoints[level], umax);
+            computeOrientation(mvImagePyramidSlave[level], allSlaveKeypoints[level], umax);
+        }
     }
 
     void ORBextractor::ComputeKeyPointsOld(std::vector<std::vector<KeyPoint> > &allKeypoints)
@@ -1165,6 +1292,162 @@ namespace ORB_SLAM3
         }
         //cout << "[ORBextractor]: extracted " << _keypoints.size() << " KeyPoints" << endl;
         return monoIndex;
+    }
+
+    int ORBextractor::operator()(InputArray _imageMaster, InputArray _imageSlave, InputArray _mask,
+                                 vector <KeyPoint> &_keypoints,
+                                 OutputArray _descriptors, std::vector<int> &vLappingArea, InputArray _depthSlave,
+                                 const cv::Mat &KMaster, const cv::Mat &KSlave, const Eigen::Matrix4f &T) {
+        if (_imageMaster.empty())
+            return -1;
+        if (_imageSlave.empty())
+            return -1;
+
+        auto image = _imageMaster.getMat();
+        auto imageS = _imageSlave.getMat();
+        auto depthS = _depthSlave.getMat();
+        assert(image.type() == CV_8UC1);
+        assert(imageS.type() == CV_8UC1);
+
+        // Pre-compute the scale pyramid
+        ComputePyramids(image, imageS);
+        vector<vector<KeyPoint>> allMasterKeypoints, allSlaveKeypoints;
+        ComputeKeyPointsOctTree(allMasterKeypoints, allSlaveKeypoints);
+
+        auto nkeypoints = 0;
+        for (auto level = 0; level < nlevels; ++level) {
+            for (auto &keypoint: allSlaveKeypoints[level]) {
+                auto scale = mvScaleFactor[level];
+                if (level != 0) {
+                    keypoint.pt *= scale;
+                }
+                if (depthS.at<float>((int) keypoint.pt.y, (int) keypoint.pt.x) != 0) {
+                    nkeypoints += 1;
+                }
+            }
+            nkeypoints += (int) allMasterKeypoints[level].size();
+        }
+        Mat descriptors;
+        if (nkeypoints == 0)
+            _descriptors.release();
+        else {
+            _descriptors.create(nkeypoints, 32, CV_8U);
+            descriptors = _descriptors.getMat();
+        }
+
+        _keypoints = vector<cv::KeyPoint>(nkeypoints);
+        Mat KSlaveInvT = KSlave.inv().t();
+        Eigen::Map<Eigen::Matrix3f> KSlaveInvEigen(KSlaveInvT.ptr<float>(), 3, 3);
+        Eigen::Matrix4f extendedKSlaveInv = Eigen::Matrix4f::Identity(4, 4);
+        extendedKSlaveInv.topLeftCorner(3, 3) = KSlaveInvEigen;
+
+        Mat KMasterT = KMaster.t();
+        Eigen::Map<Eigen::Matrix3f> KMasterEigen(KMasterT.ptr<float>(), 3, 3);
+        Eigen::Matrix4f extendedKMaster = Eigen::Matrix4f::Identity(4, 4);
+        extendedKMaster.topLeftCorner(3, 3) = KMasterEigen;
+        //Modified for speeding up stereo fisheye matching
+        auto monoIndex = 0, stereoIndex = nkeypoints - 1;
+        for (auto level = 0; level < nlevels; ++level) {
+            auto &keypointsMaster = allMasterKeypoints[level];
+            auto &keypointsSlave = allSlaveKeypoints[level];
+            auto nkeypointsLevelMaster = (int) keypointsMaster.size();
+            auto nkeypointsLevelSlave = (int) keypointsSlave.size();
+
+            if (nkeypointsLevelMaster == 0 and nkeypointsLevelSlave == 0)
+                continue;
+
+            // preprocess the resized image
+            auto workingMatMaster = mvImagePyramid[level].clone();
+            GaussianBlur(workingMatMaster, workingMatMaster, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+            auto workingMatSlave = mvImagePyramidSlave[level].clone();
+            GaussianBlur(workingMatSlave, workingMatSlave, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+
+            // Compute the descriptors
+            auto descMaster = cv::Mat(nkeypointsLevelMaster, 32, CV_8U);
+            computeDescriptors(workingMatMaster, keypointsMaster, descMaster, pattern);
+            auto descSlave = cv::Mat(nkeypointsLevelSlave, 32, CV_8U);
+            computeDescriptors(workingMatSlave, keypointsSlave, descSlave, pattern);
+
+            auto scale = mvScaleFactor[level];
+            auto i = 0;
+            for (auto &keypoint: keypointsMaster) {
+                // Scale keypoint coordinates
+                if (level != 0) {
+                    keypoint.pt *= scale;
+                }
+
+                if (keypoint.pt.x >= float(vLappingArea[0]) && keypoint.pt.x <= float(vLappingArea[1])) {
+                    _keypoints.at(stereoIndex) = keypoint;
+                    descMaster.row(i).copyTo(descriptors.row(stereoIndex));
+                    stereoIndex--;
+                } else {
+                    _keypoints.at(monoIndex) = keypoint;
+                    descMaster.row(i).copyTo(descriptors.row(monoIndex));
+                    monoIndex++;
+                }
+                i++;
+            }
+            i = 0;
+            for (auto &keypoint: keypointsSlave) {
+                auto z = depthS.at<float>((int) keypoint.pt.y, (int) keypoint.pt.x);
+                if (z != 0) {
+                    Eigen::Vector4f uvVector(keypoint.pt.x, keypoint.pt.y, 1, 1 / z);
+                    Eigen::Vector4f xyzVector = z * extendedKSlaveInv * uvVector;
+                    Eigen::Vector4f transformedXyzVector = T * xyzVector;
+
+                    Eigen::Vector4f uvReprojected = 1 / z * extendedKMaster * transformedXyzVector;
+
+                    cv::KeyPoint kp(uvReprojected[0], uvReprojected[1], keypoint.size, keypoint.angle,
+                                    keypoint.response, keypoint.octave, keypoint.class_id);
+
+                    if (keypoint.pt.x >= float(vLappingArea[0]) && keypoint.pt.x <= float(vLappingArea[1])) {
+                        _keypoints.at(stereoIndex) = kp;
+                        descSlave.row(i).copyTo(descriptors.row(stereoIndex));
+                        stereoIndex--;
+                    } else {
+                        _keypoints.at(monoIndex) = kp;
+                        descSlave.row(i).copyTo(descriptors.row(monoIndex));
+                        monoIndex++;
+                    }
+                }
+                i++;
+            }
+        }
+        return monoIndex;
+    }
+
+    void ORBextractor::ComputePyramids(const cv::Mat &imageMaster, const cv::Mat &imageSlave) {
+        for (auto level = 0; level < nlevels; ++level) {
+            auto scale = mvInvScaleFactor[level];
+            Size sz(cvRound((float) imageMaster.cols * scale), cvRound((float) imageMaster.rows * scale));
+            Size wholeSize(sz.width + EDGE_THRESHOLD * 2, sz.height + EDGE_THRESHOLD * 2);
+            Mat tempMaster(wholeSize, imageMaster.type()), masktemp;
+            Mat tempSlave(wholeSize, imageSlave.type()), masktempS;
+            mvImagePyramid[level] = tempMaster(Rect(EDGE_THRESHOLD, EDGE_THRESHOLD, sz.width, sz.height));
+            mvImagePyramidSlave[level] = tempSlave(Rect(EDGE_THRESHOLD, EDGE_THRESHOLD, sz.width, sz.height));
+
+            // Compute the resized imageMaster
+            if (level != 0) {
+                resize(mvImagePyramid[level - 1], mvImagePyramid[level], sz, 0, 0, INTER_LINEAR);
+
+                copyMakeBorder(mvImagePyramid[level], tempMaster, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD,
+                               EDGE_THRESHOLD,
+                               BORDER_REFLECT_101 + BORDER_ISOLATED);
+
+                resize(mvImagePyramidSlave[level - 1], mvImagePyramidSlave[level], sz, 0, 0, INTER_LINEAR);
+
+                copyMakeBorder(mvImagePyramidSlave[level], tempSlave, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD,
+                               EDGE_THRESHOLD,
+                               BORDER_REFLECT_101 + BORDER_ISOLATED);
+
+            } else {
+                copyMakeBorder(imageMaster, tempMaster, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD,
+                               BORDER_REFLECT_101);
+                copyMakeBorder(imageSlave, tempSlave, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD,
+                               BORDER_REFLECT_101);
+            }
+        }
+
     }
 
     void ORBextractor::ComputePyramid(cv::Mat image)

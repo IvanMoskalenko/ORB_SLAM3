@@ -17,7 +17,7 @@ include(CheckCXXCompilerFlag)
 CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
 CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X)
 if(COMPILER_SUPPORTS_CXX11)
-   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
    add_definitions(-DCOMPILEDWITHC11)
    message(STATUS "Using flag -std=c++11.")
 elseif(COMPILER_SUPPORTS_CXX0X)
@@ -150,6 +150,13 @@ if(realsense2_FOUND)
             Examples/RGB-D/rgbd_realsense_D435i.cc)
     target_link_libraries(rgbd_realsense_D435i ${PROJECT_NAME})
 endif()
+
+# RGB-D Two-view example
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D-Two-View)
+
+add_executable(rgbd_tum_tw
+        Examples/RGB-D-Two-View/rgbd_tum_tw.cc)
+target_link_libraries(rgbd_tum_tw ${PROJECT_NAME})
 
 
 # RGB-D inertial examples
