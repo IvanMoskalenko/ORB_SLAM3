@@ -1210,6 +1210,39 @@ namespace ORB_SLAM3
             computeOrbDescriptor(keypoints[i], image, &pattern[0], descriptors.ptr((int)i));
     }
 
+    static void computeUniqueDescriptors(const Mat& imageMaster, vector<KeyPoint>& keypointsMaster, Mat& descriptorsMaster,
+                                         const Mat& imageSlave, vector<KeyPoint>& keypointsSlave, Mat& descriptorsSlave,
+                                         const vector<Point>& pattern)
+    {
+        descriptorsMaster = Mat::zeros((int) keypointsMaster.size(), 32, CV_8UC1);
+
+        for (size_t i = 0; i < keypointsMaster.size(); i++)
+            computeOrbDescriptor(keypointsMaster[i], imageMaster, &pattern[0], descriptorsMaster.ptr((int) i));
+
+        descriptorsSlave = Mat::zeros((int) keypointsSlave.size(), 32, CV_8UC1);
+
+        for (size_t i = 0; i < keypointsSlave.size(); i++)
+            computeOrbDescriptor(keypointsSlave[i], imageSlave, &pattern[0], descriptorsSlave.ptr((int) i));
+
+        Mat uniqueDescriptorsSlave;
+        for (auto i = 0; i < descriptorsSlave.rows; ++i) {
+            auto isInMaster = false;
+            for (auto j = 0; j < descriptorsMaster.rows; ++j) {
+                auto count = 0;
+                for (auto k = 0; k < descriptorsMaster.cols; ++k)
+                    if (descriptorsSlave.at<int>(i, k) == descriptorsMaster.at<int>(j, k))
+                        ++count;
+                if (count == 32) {
+                    isInMaster = true;
+                    keypointsSlave.erase(keypointsSlave.begin() + i);
+                    break;
+                }
+            }
+            if (!isInMaster) uniqueDescriptorsSlave.push_back(descriptorsSlave.row(i));
+        }
+        descriptorsSlave = uniqueDescriptorsSlave;
+    }
+
     int ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPoint>& _keypoints,
                                   OutputArray _descriptors, std::vector<int> &vLappingArea)
     {
@@ -1316,9 +1349,31 @@ namespace ORB_SLAM3
         vector<vector<KeyPoint>> allMasterKeypoints, allSlaveKeypoints;
         ComputeKeyPointsOctTree(allMasterKeypoints, allSlaveKeypoints);
 
+        Mat rawDescriptorsMaster;
+        Mat rawDescriptorsSlave;
         auto nkeypoints = 0;
         for (auto level = 0; level < nlevels; ++level) {
-            for (auto &keypoint: allSlaveKeypoints[level]) {
+            auto &keypointsMaster = allMasterKeypoints[level];
+            auto &keypointsSlave = allSlaveKeypoints[level];
+            auto nkeypointsLevelMaster = (int) keypointsMaster.size();
+            auto nkeypointsLevelSlave = (int) keypointsSlave.size();
+
+            auto workingMatMaster = mvImagePyramid[level].clone();
+            GaussianBlur(workingMatMaster, workingMatMaster, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+            auto workingMatSlave = mvImagePyramidSlave[level].clone();
+            GaussianBlur(workingMatSlave, workingMatSlave, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+
+            auto descSlave = cv::Mat(nkeypointsLevelSlave, 32, CV_8U);
+            auto descMaster = cv::Mat(nkeypointsLevelMaster, 32, CV_8U);
+
+            computeUniqueDescriptors(workingMatMaster, keypointsMaster, descMaster, workingMatSlave, keypointsSlave,
+                                     descSlave, pattern);
+            for (int i = 0; i < descMaster.rows; i++)
+                rawDescriptorsMaster.push_back(descMaster.row(i));
+            for (int i = 0; i < descSlave.rows; i++)
+                rawDescriptorsSlave.push_back(descSlave.row(i));
+
+            for (auto &keypoint: keypointsSlave) {
                 auto scale = mvScaleFactor[level];
                 if (level != 0) {
                     keypoint.pt *= scale;
@@ -1327,8 +1382,10 @@ namespace ORB_SLAM3
                     nkeypoints += 1;
                 }
             }
-            nkeypoints += (int) allMasterKeypoints[level].size();
+
+            nkeypoints += nkeypointsLevelMaster;
         }
+
         Mat descriptors;
         if (nkeypoints == 0)
             _descriptors.release();
@@ -1347,31 +1404,14 @@ namespace ORB_SLAM3
         Eigen::Map<Eigen::Matrix3f> KMasterEigen(KMasterT.ptr<float>(), 3, 3);
         Eigen::Matrix4f extendedKMaster = Eigen::Matrix4f::Identity(4, 4);
         extendedKMaster.topLeftCorner(3, 3) = KMasterEigen;
-        //Modified for speeding up stereo fisheye matching
+        // Modified for speeding up stereo fisheye matching
         auto monoIndex = 0, stereoIndex = nkeypoints - 1;
+        auto i = 0, j = 0;
         for (auto level = 0; level < nlevels; ++level) {
             auto &keypointsMaster = allMasterKeypoints[level];
             auto &keypointsSlave = allSlaveKeypoints[level];
-            auto nkeypointsLevelMaster = (int) keypointsMaster.size();
-            auto nkeypointsLevelSlave = (int) keypointsSlave.size();
-
-            if (nkeypointsLevelMaster == 0 and nkeypointsLevelSlave == 0)
-                continue;
-
-            // preprocess the resized image
-            auto workingMatMaster = mvImagePyramid[level].clone();
-            GaussianBlur(workingMatMaster, workingMatMaster, Size(7, 7), 2, 2, BORDER_REFLECT_101);
-            auto workingMatSlave = mvImagePyramidSlave[level].clone();
-            GaussianBlur(workingMatSlave, workingMatSlave, Size(7, 7), 2, 2, BORDER_REFLECT_101);
-
-            // Compute the descriptors
-            auto descMaster = cv::Mat(nkeypointsLevelMaster, 32, CV_8U);
-            computeDescriptors(workingMatMaster, keypointsMaster, descMaster, pattern);
-            auto descSlave = cv::Mat(nkeypointsLevelSlave, 32, CV_8U);
-            computeDescriptors(workingMatSlave, keypointsSlave, descSlave, pattern);
 
             auto scale = mvScaleFactor[level];
-            auto i = 0;
             for (auto &keypoint: keypointsMaster) {
                 // Scale keypoint coordinates
                 if (level != 0) {
@@ -1380,16 +1420,15 @@ namespace ORB_SLAM3
                 auto z = depth.at<float>((int) keypoint.pt.y, (int) keypoint.pt.x);
                 if (keypoint.pt.x >= float(vLappingArea[0]) && keypoint.pt.x <= float(vLappingArea[1])) {
                     _keypoints.at(stereoIndex) = make_tuple(keypoint, z);
-                    descMaster.row(i).copyTo(descriptors.row(stereoIndex));
+                    rawDescriptorsMaster.row(i).copyTo(descriptors.row(stereoIndex));
                     stereoIndex--;
                 } else {
                     _keypoints.at(monoIndex) = make_tuple(keypoint, z);
-                    descMaster.row(i).copyTo(descriptors.row(monoIndex));
+                    rawDescriptorsMaster.row(i).copyTo(descriptors.row(monoIndex));
                     monoIndex++;
                 }
                 i++;
             }
-            i = 0;
             for (auto &keypoint: keypointsSlave) {
                 auto z = depthS.at<float>((int) keypoint.pt.y, (int) keypoint.pt.x);
                 if (z != 0) {
@@ -1405,15 +1444,15 @@ namespace ORB_SLAM3
 
                     if (keypoint.pt.x >= float(vLappingArea[0]) && keypoint.pt.x <= float(vLappingArea[1])) {
                         _keypoints.at(stereoIndex) = make_tuple(kp, newZ);
-                        descSlave.row(i).copyTo(descriptors.row(stereoIndex));
+                        rawDescriptorsSlave.row(j).copyTo(descriptors.row(stereoIndex));
                         stereoIndex--;
                     } else {
                         _keypoints.at(monoIndex) = make_tuple(kp, newZ);
-                        descSlave.row(i).copyTo(descriptors.row(monoIndex));
+                        rawDescriptorsSlave.row(j).copyTo(descriptors.row(monoIndex));
                         monoIndex++;
                     }
                 }
-                i++;
+                j++;
             }
         }
         return monoIndex;
