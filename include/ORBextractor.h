@@ -22,6 +22,7 @@
 #include <vector>
 #include <list>
 #include <opencv2/opencv.hpp>
+#include <Eigen/Core>
 
 
 namespace ORB_SLAM3
@@ -58,6 +59,11 @@ public:
                     std::vector<cv::KeyPoint>& _keypoints,
                     cv::OutputArray _descriptors, std::vector<int> &vLappingArea);
 
+    int operator()(cv::InputArray _imageMaster, cv::InputArray _imageSlave, cv::InputArray _mask,
+                   std::vector<std::tuple<cv::KeyPoint, float>> &_keypoints, cv::OutputArray _descriptors,
+                   std::vector<int> &vLappingArea, cv::InputArray _depthMaster, cv::InputArray _depthSlave,
+                   const cv::Mat &KMaster, const cv::Mat &KSlave, const Eigen::Matrix4f &T);
+
     int inline GetLevels(){
         return nlevels;}
 
@@ -82,7 +88,14 @@ public:
 
     std::vector<cv::Mat> mvImagePyramid;
 
+    // Used in RGBD Two-View case
+    std::vector<cv::Mat> mvImagePyramidSlave;
+
 protected:
+
+    void ComputePyramids(const cv::Mat& imageMaster, const cv::Mat& imageSlave);
+    void ComputeKeyPointsOctTree(std::vector<std::vector<cv::KeyPoint>> &allMasterKeypoints,
+                                 std::vector<std::vector<cv::KeyPoint>> &allSlaveKeypoints);
 
     void ComputePyramid(cv::Mat image);
     void ComputeKeyPointsOctTree(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);    
@@ -106,6 +119,11 @@ protected:
     std::vector<float> mvInvScaleFactor;    
     std::vector<float> mvLevelSigma2;
     std::vector<float> mvInvLevelSigma2;
+
+    std::vector<cv::KeyPoint> vToDistributeKeysCalculate(const int nRows, const int minBorderY, const int hCell,
+                                                         const int maxBorderY, const int nCols, const int minBorderX,
+                                                         const int wCell, const int maxBorderX, int level,
+                                                         bool isSlave);
 };
 
 } //namespace ORB_SLAM

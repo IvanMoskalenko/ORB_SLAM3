@@ -64,6 +64,14 @@ public:
     // Constructor for RGB-D cameras.
     Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera,Frame* pPrevF = static_cast<Frame*>(NULL), const IMU::Calib &ImuCalib = IMU::Calib());
 
+    // Constructor for RGB-D cameras (Two-View case).
+    Frame(const cv::Mat &imGrayMaster, const cv::Mat &imDepthMaster, const cv::Mat &imGraySlave,
+          const cv::Mat &imDepthSlave, const double &timeStamp, ORBextractor *extractor,
+          ORBVocabulary *voc, const cv::Mat &KMaster, cv::Mat &distCoef, const float &bf,
+          const float &thDepth, const cv::Mat &KSlave, const Eigen::Matrix4f &T,
+          GeometricCamera *pCamera, Frame *pPrevF = static_cast<Frame *>(NULL),
+          const IMU::Calib &ImuCalib = IMU::Calib());
+
     // Constructor for Monocular cameras.
     Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth, Frame* pPrevF = static_cast<Frame*>(NULL), const IMU::Calib &ImuCalib = IMU::Calib());
 
@@ -72,6 +80,10 @@ public:
 
     // Extract ORB on the image. 0 for left image and 1 for right image.
     void ExtractORB(int flag, const cv::Mat &im, const int x0, const int x1);
+
+    void ExtractORBTwoView(const cv::Mat &imMaster, const cv::Mat &imSlave, const int x0, const int x1,
+                           const cv::Mat &depthMaster, const cv::Mat &depthSlave, const cv::Mat &KMaster,
+                           const cv::Mat &KSlave, const Eigen::Matrix4f &T);
 
     // Compute Bag of Words representation.
     void ComputeBoW();
@@ -117,6 +129,8 @@ public:
 
     // Associate a "right" coordinate to a keypoint if there is valid depth in the depthmap.
     void ComputeStereoFromRGBD(const cv::Mat &imDepth);
+    // Same for Two-View case
+    void ComputeStereoFromRGBDTwoView();
 
     // Backprojects a keypoint (if stereo/depth info available) into 3D world coordinates.
     bool UnprojectStereo(const int &i, Eigen::Vector3f &x3D);
@@ -228,6 +242,9 @@ public:
     std::vector<cv::KeyPoint> mvKeys, mvKeysRight;
     std::vector<cv::KeyPoint> mvKeysUn;
 
+    // Vector of <keypoint, depth> tuples for Two-View case
+    std::vector<tuple<cv::KeyPoint, float>> mvKeysTV;
+
     // Corresponding stereo coordinate and depth for each keypoint.
     std::vector<MapPoint*> mvpMapPoints;
     // "Monocular" keypoints have a negative value.
@@ -309,6 +326,9 @@ private:
     // Only for the RGB-D case. Stereo must be already rectified!
     // (called in the constructor).
     void UndistortKeyPoints();
+
+    // Undistort for RGB-D Two-View case
+    void UndistortKeyPointsTwoView();
 
     // Computes image bounds for the undistorted image (called in the constructor).
     void ComputeImageBounds(const cv::Mat &imLeft);

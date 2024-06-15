@@ -151,6 +151,13 @@ if(realsense2_FOUND)
     target_link_libraries(rgbd_realsense_D435i ${PROJECT_NAME})
 endif()
 
+# RGB-D Two-view example
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D-Two-View)
+
+add_executable(rgbd_tum_tw
+        Examples/RGB-D-Two-View/rgbd_tum_tw.cc)
+target_link_libraries(rgbd_tum_tw ${PROJECT_NAME})
+
 
 # RGB-D inertial examples
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D-Inertial)

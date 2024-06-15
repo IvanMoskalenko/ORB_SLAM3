@@ -197,6 +197,98 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
     AssignFeaturesToGrid();
 }
 
+
+Frame::Frame(const cv::Mat &imGrayMaster, const cv::Mat &imDepthMaster, const cv::Mat &imGraySlave,
+             const cv::Mat &imDepthSlave, const double &timeStamp, ORBextractor *extractor, ORBVocabulary *voc,
+             const cv::Mat &KMaster, cv::Mat &distCoef, const float &bf, const float &thDepth,
+             const cv::Mat &KSlave, const Eigen::Matrix4f &T, GeometricCamera *pCamera, Frame *pPrevF,
+             const IMU::Calib &ImuCalib)
+        : mpcpi(NULL), mpORBvocabulary(voc), mpORBextractorLeft(extractor),
+          mpORBextractorRight(static_cast<ORBextractor *>(NULL)),
+          mTimeStamp(timeStamp), mK(KMaster.clone()), mK_(Converter::toMatrix3f(KMaster)),
+          mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth),
+          mImuCalib(ImuCalib), mpImuPreintegrated(NULL), mpPrevFrame(pPrevF), mpImuPreintegratedFrame(NULL),
+          mpReferenceKF(static_cast<KeyFrame *>(NULL)), mbIsSet(false), mbImuPreintegrated(false),
+          mpCamera(pCamera), mpCamera2(nullptr), mbHasPose(false), mbHasVelocity(false) {
+    // Frame ID
+    mnId = nNextId++;
+
+    // Scale Level Info
+    mnScaleLevels = mpORBextractorLeft->GetLevels();
+    mfScaleFactor = mpORBextractorLeft->GetScaleFactor();
+    mfLogScaleFactor = log(mfScaleFactor);
+    mvScaleFactors = mpORBextractorLeft->GetScaleFactors();
+    mvInvScaleFactors = mpORBextractorLeft->GetInverseScaleFactors();
+    mvLevelSigma2 = mpORBextractorLeft->GetScaleSigmaSquares();
+    mvInvLevelSigma2 = mpORBextractorLeft->GetInverseScaleSigmaSquares();
+
+    // ORB extraction
+#ifdef REGISTER_TIMES
+    std::chrono::steady_clock::time_point time_StartExtORB = std::chrono::steady_clock::now();
+#endif
+    ExtractORBTwoView(imGrayMaster, imGraySlave, 0, 0, imDepthMaster, imDepthSlave, KMaster, KSlave, T);
+#ifdef REGISTER_TIMES
+    std::chrono::steady_clock::time_point time_EndExtORB = std::chrono::steady_clock::now();
+
+    mTimeORB_Ext = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndExtORB - time_StartExtORB).count();
+#endif
+
+
+    N = mvKeysTV.size();
+
+    if (mvKeysTV.empty())
+        return;
+    UndistortKeyPointsTwoView();
+    ComputeStereoFromRGBDTwoView();
+
+    mvpMapPoints = vector<MapPoint *>(N, static_cast<MapPoint *>(NULL));
+
+    mmProjectPoints.clear();
+    mmMatchedInImage.clear();
+
+    mvbOutlier = vector<bool>(N, false);
+
+    // This is done only for the first Frame (or after a change in the calibration)
+    if (mbInitialComputations) {
+        ComputeImageBounds(imGrayMaster);
+
+        mfGridElementWidthInv = static_cast<float>(FRAME_GRID_COLS) / static_cast<float>(mnMaxX - mnMinX);
+        mfGridElementHeightInv = static_cast<float>(FRAME_GRID_ROWS) / static_cast<float>(mnMaxY - mnMinY);
+
+        fx = KMaster.at<float>(0, 0);
+        fy = KMaster.at<float>(1, 1);
+        cx = KMaster.at<float>(0, 2);
+        cy = KMaster.at<float>(1, 2);
+        invfx = 1.0f / fx;
+        invfy = 1.0f / fy;
+
+        mbInitialComputations = false;
+    }
+
+    mb = mbf / fx;
+
+    if (pPrevF) {
+        if (pPrevF->HasVelocity())
+            SetVelocity(pPrevF->GetVelocity());
+    } else {
+        mVw.setZero();
+    }
+
+    mpMutexImu = new std::mutex();
+
+    //Set no stereo fisheye information
+    Nleft = -1;
+    Nright = -1;
+    mvLeftToRightMatch = vector<int>(0);
+    mvRightToLeftMatch = vector<int>(0);
+    mvStereo3Dpoints = vector<Eigen::Vector3f>(0);
+    monoLeft = -1;
+    monoRight = -1;
+
+    AssignFeaturesToGrid();
+}
+
+
 Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera,Frame* pPrevF, const IMU::Calib &ImuCalib)
     :mpcpi(NULL),mpORBvocabulary(voc),mpORBextractorLeft(extractor),mpORBextractorRight(static_cast<ORBextractor*>(NULL)),
      mTimeStamp(timeStamp), mK(K.clone()), mK_(Converter::toMatrix3f(K)),mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth),
@@ -422,6 +514,14 @@ void Frame::ExtractORB(int flag, const cv::Mat &im, const int x0, const int x1)
         monoLeft = (*mpORBextractorLeft)(im,cv::Mat(),mvKeys,mDescriptors,vLapping);
     else
         monoRight = (*mpORBextractorRight)(im,cv::Mat(),mvKeysRight,mDescriptorsRight,vLapping);
+}
+
+void Frame::ExtractORBTwoView(const cv::Mat &imMaster, const cv::Mat &imSlave, const int x0, const int x1,
+                              const cv::Mat &depthMaster, const cv::Mat &depthSlave, const cv::Mat &KMaster,
+                              const cv::Mat &KSlave, const Eigen::Matrix4f &T) {
+    vector<int> vLapping = {x0, x1};
+    monoLeft = (*mpORBextractorLeft)(imMaster, imSlave, cv::Mat(), mvKeysTV,
+                                     mDescriptors, vLapping, depthMaster, depthSlave, KMaster, KSlave, T);
 }
 
 bool Frame::isSet() const {
@@ -744,6 +844,40 @@ void Frame::ComputeBoW()
     }
 }
 
+void Frame::UndistortKeyPointsTwoView() {
+    mvKeysUn.resize(N);
+    if (mDistCoef.at<float>(0) == 0.0) {
+        auto i = 0;
+        for (auto &keypoint: mvKeysTV) {
+            mvKeysUn[i] = get<0>(keypoint);
+            i++;
+        }
+        return;
+    }
+
+    // Fill matrix with points
+    cv::Mat mat(N, 2, CV_32F);
+
+    for (int i = 0; i < N; i++) {
+        mat.at<float>(i, 0) = get<0>(mvKeysTV[i]).pt.x;
+        mat.at<float>(i, 1) = get<0>(mvKeysTV[i]).pt.y;
+    }
+
+    // Undistort points
+    mat = mat.reshape(2);
+    cv::undistortPoints(mat, mat, static_cast<Pinhole *>(mpCamera)->toK(), mDistCoef, cv::Mat(), mK);
+    mat = mat.reshape(1);
+
+    // Fill undistorted keypoint vector
+    for (int i = 0; i < N; i++) {
+        cv::KeyPoint kp = get<0>(mvKeysTV[i]);
+        kp.pt.x = mat.at<float>(i, 0);
+        kp.pt.y = mat.at<float>(i, 1);
+        mvKeysUn[i] = kp;
+    }
+
+}
+
 void Frame::UndistortKeyPoints()
 {
     if(mDistCoef.at<float>(0)==0.0)
@@ -980,6 +1114,27 @@ void Frame::ComputeStereoMatches()
     }
 }
 
+void Frame::ComputeStereoFromRGBDTwoView() {
+    mvuRight = vector<float>(N, -1);
+    mvDepth = vector<float>(N, -1);
+    mvKeys.resize(N);
+
+    for (int i = 0; i < N; i++) {
+        auto const &kp = mvKeysTV[i];
+        auto const &kpU = mvKeysUn[i];
+
+        auto const &v = get<0>(kp).pt.y;
+        auto const &u = get<0>(kp).pt.x;
+
+        auto const d = get<1>(kp);
+        mvKeys[i] = get<0>(kp);
+
+        if (d > 0) {
+            mvDepth[i] = d;
+            mvuRight[i] = kpU.pt.x - mbf / d;
+        }
+    }
+}
 
 void Frame::ComputeStereoFromRGBD(const cv::Mat &imDepth)
 {
