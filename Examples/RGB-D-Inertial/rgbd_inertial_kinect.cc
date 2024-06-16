@@ -48,7 +48,7 @@ int main(int argc, char **argv)
     string strAssociationFilename = string(argv[4]);
     LoadImages(strAssociationFilename, vstrImageFilenamesRGB, vstrImageFilenamesD, vTimestamps);
 
-    string pathImu = string(argv[3]) + "/data.csv";
+    string pathImu = string(argv[3]) + "/imu.csv";
     vector<cv::Point3f> vAcc, vGyro;
     vector<double> vTimestampsImu;
     cout << "Loading IMU" << endl;
@@ -77,10 +77,7 @@ int main(int argc, char **argv)
     // Find first imu to be considered, supposing imu measurements start first
     int first_imu = 0;
     while(vTimestampsImu[first_imu]<=vTimestamps[0])
-    {
-        cout << first_imu << endl;
         first_imu++;
-    }
     first_imu--; // first imu measurement to be considered
 
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
@@ -102,8 +99,8 @@ int main(int argc, char **argv)
     for(int ni=0; ni<nImages; ni++)
     {
         // Read image and depthmap from file
-        imRGB = cv::imread(string(argv[3])+"/"+vstrImageFilenamesRGB[ni],cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
-        imD = cv::imread(string(argv[3])+"/"+vstrImageFilenamesD[ni],cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
+        imRGB = cv::imread(string(argv[3])+"/"+vstrImageFilenamesRGB[ni],cv::IMREAD_UNCHANGED);
+        imD = cv::imread(string(argv[3])+"/"+vstrImageFilenamesD[ni],cv::IMREAD_UNCHANGED);
         double tframe = vTimestamps[ni];
 
         if(imRGB.empty())
